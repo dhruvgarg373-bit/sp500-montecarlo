@@ -1,14 +1,7 @@
 export default async function handler(req, res) {
   const { lookback = '1825', ticker = 'SPY' } = req.query; 
-
-  // Map requested days to valid Yahoo Finance ranges
-  const rangeMap = {
-    '100': '6mo',
-    '365': '1y',
-    '1825': '5y',
-    '5475': 'max', // 15 years -> 'max' is safest for oldest possible data
-  };
-  const range = rangeMap[lookback] || 'max';
+  const rangeMap = { '100': '6mo', '365': '1y', '1825': '5y', '5475': 'max' };
+  const range = rangeMap[lookback] || '5y';
 
   try {
     const assetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker.toUpperCase()}?interval=1d&range=${range}`;
@@ -22,8 +15,6 @@ export default async function handler(req, res) {
 
     const prices = [];
     const dates = [];
-
-    // Clean data and build pure arrays
     for (let i = 0; i < timestamps.length; i++) {
       if (closes[i] !== null) {
         prices.push(closes[i]);
@@ -31,26 +22,20 @@ export default async function handler(req, res) {
       }
     }
 
-    // Slice to the EXACT number of days requested (since Yahoo 'max' is arbitrary)
-    const numToKeep = Math.min(parseInt(lookback), prices.length);
-    const slicedPrices = prices.slice(-numToKeep);
-    const slicedDates = dates.slice(-numToKeep);
-
-    // Fetch Risk-Free Rate (^TNX) from Yield Curve
     let rf = 0.042; 
     try {
       const tnxRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/^TNX?interval=1d&range=5d`);
       const tnxData = await tnxRes.json();
       rf = (tnxData.chart.result[0].indicators.quote[0].close.slice(-1)[0] / 100);
-    } catch (e) { console.warn("Treasury fetch failed, using fallback."); }
+    } catch (e) { console.warn("Treasury fetch failed."); }
 
     return res.status(200).json({
       ticker: ticker.toUpperCase(),
-      prices: slicedPrices,
-      dates: slicedDates,
-      startPrice: slicedPrices[slicedPrices.length - 1],
+      prices,
+      dates,
+      startPrice: prices[prices.length - 1],
       riskFreeRate: rf,
-      meta: { source: 'Yahoo Finance' }
+      meta: { source: 'Yahoo Finance ^TNX / Equity' }
     });
   } catch (error) {
     return res.status(500).json({ error: 'Data Fetch Failure' });
