@@ -159,8 +159,6 @@ function drawPaths(canvas, paths, from, to, range, days, log) {
 }
 
 // ─── Calibration math ─────────────────────────────────────────────────────────
-// Takes a chronological array of prices; returns annualised mu, sigma, and
-// calibrated Heston/Merton params. All derived from the actual data — nothing hardcoded.
 function calibrateFromPrices(prices) {
   const logReturns = [];
   for (let i = 1; i < prices.length; i++) {
@@ -171,15 +169,11 @@ function calibrateFromPrices(prices) {
   const muD = logReturns.reduce((a, b) => a + b, 0) / n;
   const varD = logReturns.reduce((a, b) => a + (b - muD) ** 2, 0) / (n - 1);
 
-  const mu    = muD * 252;              // annualised drift
+  const mu    = muD * 252;               // annualised drift
   const sigma = Math.sqrt(varD * 252); // annualised vol
-  const nu0   = varD * 252;            // initial variance for Heston (= sigma²)
+  const nu0   = varD * 252;             // initial variance for Heston (= sigma²)
 
-  // Merton jump lambda: scale with data — more history = more stable estimate.
-  // Historical S&P averages ~5 jumps/yr on short windows, 3-4 on long ones.
   const jumpLambda = Math.max(2, Math.min(8, 500 / n));
-
-  // Heston long-run variance calibrated to realised vol
   const theta = nu0;
 
   return { mu, sigma0: sigma, nu0, theta, jumpLambda };
@@ -193,18 +187,18 @@ export default function App() {
   const [forecastDays, setForecastDays] = useState(252);
   const [logScale,     setLogScale]     = useState(false);
   const [apiKey,       setApiKey]       = useState('');
-  const [lookback,     setLookback]     = useState('730');  // default 2yr
+  const [lookback,     setLookback]     = useState('1825');  // default 5yr structural
   const [showAdv,      setShowAdv]      = useState(false);
   const [params,       setParams]       = useState(DEFAULT_PARAMS);
 
   // ── Simulation state ──
-  const [status,      setStatus]      = useState('idle');
-  const [completed,   setCompleted]   = useState(0);
-  const [stats,       setStats]       = useState(null);
-  const [histData,    setHistData]    = useState([]);
-  const [error,       setError]       = useState('');
-  const [calibration, setCalibration] = useState(null); // { mu, sigma, startPrice, source, ... }
-  const [startPrice,  setStartPrice]  = useState(5540);
+  const [status,       setStatus]       = useState('idle');
+  const [completed,    setCompleted]    = useState(0);
+  const [stats,        setStats]        = useState(null);
+  const [histData,     setHistData]     = useState([]);
+  const [error,        setError]        = useState('');
+  const [calibration,  setCalibration]  = useState(null); 
+  const [startPrice,   setStartPrice]   = useState(5540);
 
   // ── Refs for animation loop ──
   const canvasRef  = useRef(null);
@@ -212,13 +206,11 @@ export default function App() {
   const rangeRef   = useRef(null);
   const drawnRef   = useRef(0);
   const animRef    = useRef(null);
-  const spRef      = useRef(startPrice); // stable ref for redraw
+  const spRef      = useRef(startPrice);
   spRef.current    = startPrice;
 
-  // Cleanup on unmount
   useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
-  // Redraw on log scale toggle (no re-simulation needed)
   useEffect(() => {
     if (status === 'done' && pathsRef.current.length > 0 && rangeRef.current) {
       initCanvas(canvasRef.current, rangeRef.current, forecastDays, spRef.current, logScale);
@@ -226,21 +218,37 @@ export default function App() {
     }
   }, [logScale]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Live data fetch ────────────────────────────────────────────────────────
+  // ── Live data fetch (UPDATED WITH TRANSLATION ENGINE) ───────────────────────
   async function fetchLiveData() {
-    // Call our Vercel proxy — NOT Alpha Vantage directly (CORS would block that).
-    const res  = await fetch(`/api/spy?apikey=${encodeURIComponent(apiKey.trim())}&lookback=${lookback}`);
+    let backendLookback = '100d';
+    if (lookback === '365') backendLookback = '1y';
+    if (lookback === '730') backendLookback = '2y';
+    if (lookback === '1825') backendLookback = '5y';
+
+    const res  = await fetch(`/api/spy?apikey=${encodeURIComponent(apiKey.trim())}&lookback=${backendLookback}`);
     const data = await res.json();
 
     if (!res.ok) {
-      // Backend always returns { error: "..." } on failure
       throw new Error(data.error || `Server error (HTTP ${res.status})`);
     }
 
-    // data.prices is a clean chronological array of adjusted closes
-    // data.startPrice is the most recent value
-    // data.meta has dates and source info for display
-    return data;
+    const ts = data['Time Series (Daily)'];
+    if (!ts) throw new Error("Unexpected data format returned from server. Check API limits or backend logic.");
+
+    const dates = Object.keys(ts).sort(); 
+    const prices = dates.map(d => parseFloat(ts[d]['4. close']));
+    const sp = prices[prices.length - 1];
+
+    return {
+      prices: prices,
+      startPrice: sp,
+      meta: {
+        source: backendLookback === '100d' ? 'Alpha Vantage (Current Regime)' : 'Yahoo Finance (Structural Trend)',
+        sessionsReturned: prices.length,
+        oldestDate: dates[0],
+        newestDate: dates[dates.length - 1]
+      }
+    };
   }
 
   // ── Animation loop ─────────────────────────────────────────────────────────
@@ -278,17 +286,16 @@ export default function App() {
     setCalibration(null);
     drawnRef.current = 0;
 
-    await new Promise(r => setTimeout(r, 30)); // allow React to re-render loading state
+    await new Promise(r => setTimeout(r, 30)); 
 
     let simParams = { ...params };
     let liveStart = startPrice;
 
     if (demo) {
-      // ── Demo mode: use historical S&P 500 long-run averages ──
       const demoCalib = {
         mu:     0.10,
         sigma0: 0.18,
-        nu0:    0.0324, // 0.18²
+        nu0:    0.0324, 
         theta:  0.0324,
         jumpLambda: 5,
       };
@@ -305,9 +312,9 @@ export default function App() {
         lookbackLabel: 'N/A',
       });
     } else {
-      // ── Live mode: fetch real SPY data, calibrate from actual prices ──
-      if (!apiKey.trim()) {
-        setError('Enter your Alpha Vantage API key to use live data, or click Demo Mode.');
+      // SECURITY BOUNCER FIX: Only require API key if using the 100-day AV endpoint
+      if (!apiKey.trim() && lookback === '100') {
+        setError('Enter your Alpha Vantage API key for the 100-day data, or use Demo Mode.');
         setStatus('idle');
         return;
       }
@@ -321,16 +328,14 @@ export default function App() {
         return;
       }
 
-      // Calibrate all model params from the actual price series
       const calib = calibrateFromPrices(fetchResult.prices);
       liveStart = fetchResult.startPrice;
 
-      // Update params with calibrated values; preserve user overrides from advanced panel
       simParams = {
         ...params,
         mu:         calib.mu,
         sigma0:     calib.sigma0,
-        theta:      showAdv ? params.theta : calib.theta,   // honour manual override if advanced panel is open
+        theta:      showAdv ? params.theta : calib.theta,   
         jumpLambda: showAdv ? params.jumpLambda : calib.jumpLambda,
       };
 
@@ -355,7 +360,6 @@ export default function App() {
       });
     }
 
-    // ── Run simulation ──
     const paths = runAllPaths({
       ...simParams,
       startPrice:  liveStart,
@@ -365,7 +369,6 @@ export default function App() {
     });
     pathsRef.current = paths;
 
-    // Compute price range for canvas (do once, upfront)
     let minP = Infinity, maxP = -Infinity;
     for (const path of paths) {
       for (const p of path) {
@@ -431,7 +434,6 @@ export default function App() {
         @keyframes fi { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
       `}</style>
 
-      {/* ── Header ───────────────────────────────────────────────────────── */}
       <div style={{ marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
           <h1 style={{ fontFamily: "'Syne', sans-serif", fontSize: 22, fontWeight: 800,
@@ -459,7 +461,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Live calibration summary */}
         {calibration && (
           <div className="fade-in" style={{ marginTop: 8, fontSize: 9, lineHeight: 1.9,
             color: '#2d5a8a', padding: '6px 10px', background: '#0a1020',
@@ -481,7 +482,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Top stat row */}
         {stats && (
           <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 10 }}>
             {[
@@ -502,14 +502,10 @@ export default function App() {
         )}
       </div>
 
-      {/* ── Controls ─────────────────────────────────────────────────────── */}
       <div className="card" style={{ marginBottom: 12 }}>
-
-        {/* Row 1: primary controls */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(155px,1fr))',
           gap: '10px 18px', marginBottom: 12 }}>
 
-          {/* Lookback horizon — the new feature */}
           <div style={{ gridColumn: 'span 2' }}>
             <span className="lbl">
               LOOKBACK HORIZON
@@ -546,7 +542,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Model */}
           <div>
             <span className="lbl">STOCHASTIC MODEL</span>
             <select value={model} onChange={e => setModel(e.target.value)} disabled={isRunning}>
@@ -554,28 +549,24 @@ export default function App() {
             </select>
           </div>
 
-          {/* Simulations */}
           <div>
             <span className="lbl">PATHS: <span style={{ color: '#00d4ff' }}>{numSims}</span></span>
             <input type="range" min={50} max={1000} step={50}
               value={numSims} onChange={e => setNumSims(+e.target.value)} disabled={isRunning} />
           </div>
 
-          {/* Horizon */}
           <div>
             <span className="lbl">FORECAST: <span style={{ color: '#00d4ff' }}>{horizLabel}</span></span>
             <input type="range" min={21} max={504} step={21}
               value={forecastDays} onChange={e => setForecastDays(+e.target.value)} disabled={isRunning} />
           </div>
 
-          {/* Start price */}
           <div>
             <span className="lbl">S₀ START PRICE</span>
             <input type="number" value={startPrice}
               onChange={e => setStartPrice(+e.target.value)} disabled={isRunning} />
           </div>
 
-          {/* API key */}
           <div>
             <span className="lbl">ALPHA VANTAGE KEY</span>
             <input type="text" value={apiKey}
@@ -584,13 +575,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* Model description */}
         <div style={{ fontSize: 9, color: '#1e4a70', marginBottom: 10,
           padding: '6px 8px', background: '#070b14', borderRadius: 5 }}>
           {selectedModel?.desc}
         </div>
 
-        {/* Toggles + run buttons */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 5,
             fontSize: 10, color: '#4a6fa5', cursor: 'pointer', userSelect: 'none' }}>
@@ -614,7 +603,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Advanced panel */}
         {showAdv && (
           <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${BORDER}`,
             display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(130px,1fr))', gap: '8px 16px' }}>
@@ -644,7 +632,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Error banner */}
       {error && (
         <div style={{ background: '#1a0808', border: '1px solid #7f1d1d',
           borderRadius: 8, padding: '10px 14px', marginBottom: 12,
@@ -653,10 +640,8 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Main layout ────────────────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 12, alignItems: 'start' }}>
 
-        {/* Canvas panel */}
         <div className="card" style={{ padding: 10 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between',
             fontSize: 9, color: '#2d5a8a', marginBottom: 8 }}>
@@ -678,17 +663,15 @@ export default function App() {
                   AWAITING SIMULATION
                 </div>
                 <div style={{ fontSize: 9, color: '#102030', marginTop: 5 }}>
-                  Demo runs instantly · Live Run requires Alpha Vantage key
+                  Demo runs instantly · Live Run requires Alpha Vantage key for 100d
                 </div>
               </div>
             )}
           </div>
         </div>
 
-        {/* Right panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
-          {/* Live histogram */}
           <div className="card">
             <div style={{ fontSize: 9, color: '#2d5a8a', marginBottom: 6,
               display: 'flex', justifyContent: 'space-between' }}>
@@ -720,7 +703,6 @@ export default function App() {
                         stroke={d.above ? '#22c55e33' : '#ef444433'} />
                     ))}
                   </Bar>
-                  {/* Normal distribution overlay — yellow dashed line */}
                   <Line dataKey="normalPdf" stroke="#fbbf24" strokeWidth={1.5}
                     dot={false} isAnimationActive={false} strokeDasharray="3 2" />
                 </ComposedChart>
@@ -739,7 +721,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Stats panel */}
           {stats && (
             <div className="card fade-in">
               <div style={{ fontSize: 9, color: '#2d5a8a', marginBottom: 10 }}>STATISTICS</div>
@@ -761,7 +742,6 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Percentile table */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)',
                 gap: 4, fontSize: 9, textAlign: 'center' }}>
                 {[
@@ -791,7 +771,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Regime comparison tip */}
           {status === 'done' && (
             <div className="card fade-in" style={{ fontSize: 9, color: '#2d5a8a', lineHeight: 1.8 }}>
               <div style={{ color: '#4a6fa5', marginBottom: 5 }}>💡 REGIME COMPARISON TIP</div>
