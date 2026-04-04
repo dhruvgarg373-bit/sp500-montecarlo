@@ -1,6 +1,8 @@
 export default async function handler(req, res) {
   const { lookback = '1825', ticker = 'SPY' } = req.query; 
-  const rangeMap = { '100': '6mo', '365': '1y', '1825': '5y', '5475': 'max' };
+
+  // Map UI days to Yahoo ranges
+  const rangeMap = { '100': '6mo', '365': '1y', '730': '2y', '1825': '5y', '5475': 'max' };
   const range = rangeMap[lookback] || '5y';
 
   try {
