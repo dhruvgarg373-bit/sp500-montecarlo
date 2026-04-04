@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Cell, ResponsiveContainer } from 'recharts';
 import { runAllPaths, computeStats, buildHistogram } from './simulation.js';
 
-// ─── Theme ───────────────────────────────────────────────────────────
+// ─── Theme Colors & Fonts ──────────────────────────────────────────────────
 const BG         = '#f5f2eb'; 
 const CARD_BG    = '#fdfcfb'; 
 const SAGE       = '#7e998a'; 
@@ -29,7 +29,7 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [histData, setHistData] = useState([]);
   const [calibration, setCalibration] = useState(null);
-  const [startPrice, setStartPrice] = useState(0);
+  const [startPrice, setStartPrice] = useState(5540);
   const [hoveredStat, setHoveredStat] = useState(null);
 
   const canvasRef = useRef(null);
@@ -44,6 +44,8 @@ export default function App() {
   };
 
   const PAD = { top: 30, right: 20, bottom: 44, left: 75 };
+
+  // ─── Core Drawing Logic ────────────────────────────────────────────────────
   const getScalers = (range, days) => {
     const W = 1000, H = 500;
     const iW = W - PAD.left - PAD.right, iH = H - PAD.top - PAD.bottom;
@@ -67,6 +69,24 @@ export default function App() {
     });
   }
 
+  function drawPaths(ctx, from, to) {
+    const { toX, toY } = getScalers(rangeRef.current, forecastDays);
+    for (let i = from; i < to; i++) {
+        const path = pathsRef.current[i];
+        const finalP = path[path.length - 1];
+        let opacity = 0.35;
+        if (hoveredStat === 'bear') opacity = finalP <= stats?.p5 ? 1.0 : 0.05;
+        if (hoveredStat === 'bull') opacity = finalP >= stats?.p95 ? 1.0 : 0.05;
+
+        ctx.strokeStyle = `hsla(${165 + (i % 50)}, 35%, 45%, ${opacity})`;
+        ctx.lineWidth = opacity > 0.5 ? 2.5 : 1;
+        ctx.beginPath(); ctx.moveTo(toX(0), toY(path[0]));
+        path.forEach((p, d) => ctx.lineTo(toX(d), toY(p)));
+        ctx.stroke();
+    }
+  }
+
+  // ─── Animation & Fetch ─────────────────────────────────────────────────────
   async function handleRun() {
     if (animRef.current) cancelAnimationFrame(animRef.current);
     setStatus('computing');
@@ -114,27 +134,13 @@ export default function App() {
     const ctx = canvasRef.current.getContext('2d');
     const animate = () => {
       initCanvas(rangeRef.current);
-      const { toX, toY } = getScalers(rangeRef.current, forecastDays);
-      
-      const from = 0;
-      const to = Math.min(drawnRef.current + 5, pathsRef.current.length);
-      for (let i = from; i < to; i++) {
-        const path = pathsRef.current[i];
-        const finalP = path[path.length - 1];
-        let opacity = 0.35;
-        if (hoveredStat === 'bear') opacity = finalP <= stats?.p5 ? 1.0 : 0.05;
-        if (hoveredStat === 'bull') opacity = finalP >= stats?.p95 ? 1.0 : 0.05;
+      drawPaths(ctx, 0, Math.min(drawnRef.current + 5, pathsRef.current.length));
+      drawnRef.current = Math.min(drawnRef.current + 5, pathsRef.current.length);
 
-        ctx.strokeStyle = `hsla(${165 + (i % 50)}, 35%, 45%, ${opacity})`;
-        ctx.beginPath(); ctx.moveTo(toX(0), toY(path[0]));
-        path.forEach((p, d) => ctx.lineTo(toX(d), toY(p)));
-        ctx.stroke();
-      }
-      drawnRef.current = to;
-      if (to % 20 === 0 || to === pathsRef.current.length) {
-        const finals = pathsRef.current.slice(0, to).map(p => p[p.length - 1]);
+      if (drawnRef.current % 20 === 0 || drawnRef.current === pathsRef.current.length) {
+        const finals = pathsRef.current.slice(0, drawnRef.current).map(p => p[p.length - 1]);
         setHistData(buildHistogram(finals, liveStart));
-        if(to === pathsRef.current.length) {
+        if(drawnRef.current === pathsRef.current.length) {
           setStats(computeStats(finals, liveStart));
           setStatus('done'); return;
         }
@@ -144,28 +150,19 @@ export default function App() {
     animRef.current = requestAnimationFrame(animate);
   }
 
-  // Effect to redraw on hover
+  // Redraw on hover state change
   useEffect(() => {
     if (status === 'done' && canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       initCanvas(rangeRef.current);
-      const { toX, toY } = getScalers(rangeRef.current, forecastDays);
-      pathsRef.current.forEach((path, i) => {
-        const finalP = path[path.length - 1];
-        let opacity = 0.4;
-        if (hoveredStat === 'bear') opacity = finalP <= stats.p5 ? 1.0 : 0.05;
-        if (hoveredStat === 'bull') opacity = finalP >= stats.p95 ? 1.0 : 0.05;
-        ctx.strokeStyle = `hsla(${165 + (i % 50)}, 35%, 45%, ${opacity})`;
-        ctx.beginPath(); ctx.moveTo(toX(0), toY(path[0]));
-        path.forEach((p, d) => ctx.lineTo(toX(d), toY(p)));
-        ctx.stroke();
-      });
+      drawPaths(ctx, 0, pathsRef.current.length);
     }
   }, [hoveredStat]);
 
   return (
     <div style={{ background: BG, minHeight: '100vh', padding: '40px', color: TEXT_MAIN, fontFamily: "'EB Garamond', serif" }}>
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@800&family=Inter:wght@400;700;900&display=swap');
         .block { background: ${CARD_BG}; border: 1px solid ${BORDER}; border-radius: 12px; padding: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.02); }
         .stat-card { transition: 0.3s; border-left: 5px solid transparent; cursor: pointer; flex: 1; font-family: 'Inter', sans-serif; }
         .stat-card:hover { transform: translateY(-3px); background: #fff; box-shadow: 0 8px 20px rgba(0,0,0,0.05); }
@@ -176,7 +173,7 @@ export default function App() {
         input, select { padding: 12px; border: 1px solid ${BORDER}; border-radius: 8px; font-family: 'Inter', sans-serif; width: 100%; }
       `}</style>
 
-      {/* Header Stat Strip */}
+      {/* Top Stat Strip */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '30px' }}>
         <div><h1>Risk Simulation Engine</h1></div>
         {stats && (
@@ -185,12 +182,12 @@ export default function App() {
                <span className="label">MEDIAN</span>
                <div style={{fontSize: '22px', fontWeight: 900}}>{formatPrice(stats.median)}</div>
              </div>
-             <div className="block stat-card" style={{borderLeftColor: SAGE}} title="95th Percentile: Extremely optimistic outcome."
+             <div className="block stat-card" style={{borderLeftColor: SAGE}} title="95th Percentile outcome."
                   onMouseEnter={() => setHoveredStat('bull')} onMouseLeave={() => setHoveredStat(null)}>
                <span className="label">BULL 95%</span>
                <div style={{fontSize: '22px', fontWeight: 900, color: SAGE}}>{formatPrice(stats.p95)}</div>
              </div>
-             <div className="block stat-card" style={{borderLeftColor: MAHOGANY}} title="5th Percentile: Maximum loss threshold."
+             <div className="block stat-card" style={{borderLeftColor: MAHOGANY}} title="5th Percentile (Value at Risk)."
                   onMouseEnter={() => setHoveredStat('bear')} onMouseLeave={() => setHoveredStat(null)}>
                <span className="label">BEAR 5%</span>
                <div style={{fontSize: '22px', fontWeight: 900, color: MAHOGANY}}>{formatPrice(stats.p5)}</div>
@@ -215,7 +212,10 @@ export default function App() {
             ))}
           </div>
           {lookback === 'custom' && (
-            <input type="range" min="100" max="3650" value={customDays} onChange={e=>setCustomDays(+e.target.value)} style={{marginTop:'15px', accentColor:MAHOGANY}} />
+            <div style={{marginTop:'12px'}}>
+               <span className="label" style={{color:MAHOGANY}}>Custom: {customDays} Days</span>
+               <input type="range" min="100" max="3650" step="50" value={customDays} onChange={e=>setCustomDays(+e.target.value)} style={{accentColor:MAHOGANY}} />
+            </div>
           )}
         </div>
         <div className="block">
@@ -237,12 +237,12 @@ export default function App() {
         </div>
       </div>
 
-      {/* View */}
+      {/* Projection View */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: '20px' }}>
         <div className="block">
           <div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}>
              <span className="label" style={{color:TEXT_MAIN}}>Trajectories ({forecastDays} Days)</span>
-             {calibration && <span style={{fontSize:'11px', color:SAGE, fontWeight:700}}>{calibration.ticker} CALIB: {calibration.start} TO {calibration.end} | μ: {(calibration.mu*100).toFixed(1)}% | σ: {(calibration.sigma*100).toFixed(1)}%</span>}
+             {calibration && <span style={{fontSize:'11px', color:SAGE, fontWeight:700}}>{calibration.ticker} CALIB: {calibration.start} TO {calibration.end} | σ: {(calibration.sigma*100).toFixed(1)}%</span>}
           </div>
           <canvas ref={canvasRef} width={1000} height={500} style={{ width: '100%', height: 'auto', background: BG }} />
           <input type="range" min="21" max="504" value={forecastDays} onChange={e=>setForecastDays(+e.target.value)} style={{width:'100%', marginTop:'15px', accentColor:TEAL}} />
@@ -263,11 +263,11 @@ export default function App() {
           </div>
 
           <div className="block" style={{ borderLeft: `6px solid ${MAHOGANY}` }}>
-             <span className="label" style={{color: MAHOGANY}}>Market Narrative</span>
+             <span className="label" style={{color: MAHOGANY}}>Market Profile</span>
              <p style={{fontSize:'12px', lineHeight:1.6, color:TEXT_MAIN, marginTop:'10px'}}>
-               {ticker} risk profile is dominated by {calibration?.sigma > 0.25 ? 'High Volatility' : 'Structural Growth'}. 
-               Heston Stochastic Volatility detected clustering, while Merton Jumps modeled a fat-tail distribution. 
-               The {stats?.expectedReturn}% expected return is anchored to the 10-Year Treasury Yield.
+               {ticker} risk profile is dominated by {calibration?.sigma > 0.3 ? 'High Volatility' : 'Structural Momentum'}. 
+               {stats && `The simulation suggests a ${stats.probUp}% probability of price appreciation.`}
+               Expected returns are anchored to current Treasury yields.
              </p>
           </div>
         </div>
